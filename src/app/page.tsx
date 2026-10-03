@@ -1,7 +1,6 @@
 "use client";
 
-import { FormEvent, useState } from "react";
-import { useEffect } from "react";
+import { FormEvent, useSyncExternalStore, useState } from "react";
 
 type Task = {
   id: number;
@@ -10,32 +9,70 @@ type Task = {
 };
 
 const STORAGE_KEY = "playwright-task-app-tasks";
+const TASKS_CHANGED_EVENT = "tasks-changed";
 
-function loadTasks(): Task[] {
-  if (typeof window === "undefined") {
-    return [];
-  }
-
-  const storedTasks = localStorage.getItem(STORAGE_KEY);
-
-  if (!storedTasks) {
+function parseTasks(raw: string): Task[] {
+  if (!raw) {
     return [];
   }
 
   try {
-    return JSON.parse(storedTasks) as Task[];
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as Task[]) : [];
   } catch {
     return [];
   }
 }
 
-export default function Home() {
-  const [tasks, setTasks] = useState<Task[]>(loadTasks);
-  const [title, setTitle] = useState("");
+function subscribe(callback: () => void) {
+  const handleStorageChange = () => {
+    callback();
+  };
 
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks));
-  }, [tasks]);
+  const handleTasksChanged = () => {
+    callback();
+  };
+
+  window.addEventListener("storage", handleStorageChange);
+  window.addEventListener(TASKS_CHANGED_EVENT, handleTasksChanged);
+
+  return () => {
+    window.removeEventListener("storage", handleStorageChange);
+    window.removeEventListener(TASKS_CHANGED_EVENT, handleTasksChanged);
+  };
+}
+
+function getSnapshot() {
+  return localStorage.getItem(STORAGE_KEY) ?? "";
+}
+
+function getServerSnapshot() {
+  return "";
+}
+
+function saveTasks(tasks: Task[]) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks));
+
+  window.dispatchEvent(new Event(TASKS_CHANGED_EVENT));
+}
+
+function createTask(title: string): Task {
+  return {
+    id: Date.now(),
+    title,
+    completed: false,
+  };
+}
+
+export default function Home() {
+  const storedTasks = useSyncExternalStore(
+    subscribe,
+    getSnapshot,
+    getServerSnapshot,
+  );
+
+  const tasks = parseTasks(storedTasks);
+  const [title, setTitle] = useState("");
 
   function addTask(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -46,26 +83,24 @@ export default function Home() {
       return;
     }
 
-    const newTask: Task = {
-      id: Date.now(),
-      title: trimmedTitle,
-      completed: false,
-    };
+    const newTask = createTask(trimmedTitle);
 
-    setTasks((currentTasks) => [...currentTasks, newTask]);
+    saveTasks([...tasks, newTask]);
     setTitle("");
   }
 
   function toggleTask(id: number) {
-    setTasks((currentTasks) =>
-      currentTasks.map((task) =>
-        task.id === id ? { ...task, completed: !task.completed } : task,
-      ),
+    const nextTasks = tasks.map((task) =>
+      task.id === id ? { ...task, completed: !task.completed } : task,
     );
+
+    saveTasks(nextTasks);
   }
 
   function deleteTask(id: number) {
-    setTasks((currentTasks) => currentTasks.filter((task) => task.id !== id));
+    const nextTasks = tasks.filter((task) => task.id !== id);
+
+    saveTasks(nextTasks);
   }
 
   const remainingCount = tasks.filter((task) => !task.completed).length;
@@ -137,6 +172,7 @@ export default function Home() {
               <button
                 type="button"
                 onClick={() => deleteTask(task.id)}
+                aria-label={`${task.title}を削除`}
                 className="rounded px-3 py-1.5 text-sm text-red-600 transition hover:bg-red-50"
               >
                 削除
